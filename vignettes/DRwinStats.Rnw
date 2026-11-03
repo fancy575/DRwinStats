@@ -1,0 +1,371 @@
+% \VignetteIndexEntry{DRwinStats: analysis of prioritized survival outcomes}
+% \VignetteEngine{knitr::knitr}
+% \VignetteEncoding{UTF-8}
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+\title{DRwinStats: analysis of prioritized survival outcomes}
+\author{Xi Fang\\\texttt{xfang@mcw.edu}}
+\date{}
+
+\begin{document}
+\maketitle
+
+<<setup, include=FALSE, cache=FALSE>>=
+library(DRwinStats)
+knitr::opts_chunk$set(cache = FALSE, collapse = TRUE, comment = "#>",
+                     fig.width = 7, fig.height = 4.5,
+                     fig.align = "center", out.width = "0.95\\linewidth")
+@
+
+\section{Data and clinical comparison}
+
+\texttt{DRwinStats} estimates win, loss, and tie probabilities for a prespecified
+hierarchy of survival outcomes. The win ratio, win odds, and net benefit are
+calculated from these probabilities. Participants are compared through a
+common restriction time, and longer event-free times are preferred. The same
+interface is used for individually randomized and cluster-randomized trials.
+When no cluster variable is supplied, each participant is treated as a
+separate cluster.
+
+The input is a data frame containing longitudinal event records. Each row
+gives a participant identifier, treatment assignment, time, and event code.
+Event code \texttt{1} is the terminal event of highest priority, usually death.
+Codes \texttt{2}, \texttt{3}, and subsequent codes identify nonterminal events
+in decreasing order of priority. Code \texttt{0} records the end of observation.
+The code does not identify the treatment arm.
+
+Each participant must have one final row with code \texttt{0} or \texttt{1}.
+Earlier rows record nonterminal events. For example, hospitalization followed
+by death gives a code-2 row followed by a code-1 row. Hospitalization followed
+by the end of observation gives a code-2 row followed by a code-0 row.
+A hospitalization row alone does not establish the duration of subsequent
+follow-up. Baseline covariates and treatment assignment are repeated across
+the participant's rows. In a CRT, treatment assignment must be constant
+within each cluster.
+
+The example datasets contain simulated records only. The IRT has 500
+participants, with 250 in each arm. The CRT has 334 participants in 30
+clusters, with 15 clusters in each arm. Both examples prioritize death over
+first hospitalization and have administrative follow-up at three years.
+
+<<data>>=
+utils::data("example_irt", package = "DRwinStats",
+            envir = environment())
+utils::data("example_crt", package = "DRwinStats",
+            envir = environment())
+head(example_irt)
+length(unique(example_irt$id))
+length(unique(example_crt$cluster))
+@
+
+With \texttt{recurrent = "first"}, the first occurrence of each nonterminal
+event type defines its event time. The package does not interpret repeated
+rows as a count-based recurrent-event comparison. The \texttt{priorities}
+argument specifies the event codes to include; supplying it explicitly also
+identifies an outcome with no observed event in a particular dataset.
+The default zero thresholds distinguish any unequal restricted times.
+Positive thresholds can be supplied when the clinical comparison requires
+a minimum time difference. See \texttt{help("drwins")} for the supported
+model and outcome combinations.
+
+\subsection{End of observation and restriction times}
+
+A status-0 row at time $u$ indicates that the participant was observed through
+$u$. At a restriction time $\tau\leq u$, the restricted outcome is therefore
+observed. At $\tau>u$, that row indicates censoring before the restricted
+outcome is resolved. A terminal event before $\tau$ resolves the restricted
+outcome. This distinction is used both in estimation and in the reported
+censoring rates.
+
+If \texttt{times} is omitted, the package uses the 25th, 50th, and 75th
+percentiles of the participants' final follow-up times. Each participant
+contributes once to this calculation, even if several event rows are present.
+Repeated quantiles are removed. These defaults provide convenient example
+analyses; the restriction times for a trial analysis should reflect its
+scientific objectives.
+
+<<followup>>=
+irt_end <- example_irt[example_irt$status %in% c(0L, 1L), ]
+quantile(irt_end$time, probs = c(0.25, 0.50, 0.75))
+
+# Proportion censored before the restricted outcome is resolved at two years.
+mean(irt_end$status == 0L & irt_end$time < 2)
+@
+
+\section{Individually randomized trials}
+
+The \texttt{outcome} and \texttt{censoring} arguments accept one-sided model
+formulas. A common outcome formula is applied to each component. Treatment
+need not be included in either formula because the models are fitted
+separately in the two treatment arms. Formula terms can include factors,
+interactions, and transformations such as \texttt{I(x\^{}2)}.
+
+The following analysis uses proportional hazards outcome margins, a Gumbel
+survival copula, and a Cox censoring model. The examples were generated with
+fixed equal allocation, so \texttt{allocation = "complete"} is specified.
+
+<<irt-analysis, eval=FALSE>>=
+fit_irt <- DRwinStats::drwins(
+  data = example_irt,
+  outcome = ~ age + sex + x,
+  censoring = ~ age + sex + x,
+  id = "id", time = "time", status = "status",
+  treatment = "treatment",
+  priorities = c(1L, 2L),
+  outcome_model = "cox",
+  censoring_model = "cox",
+  copula = "gumbel",
+  times = c(1, 2, 3),
+  allocation = "complete"
+)
+summary(fit_irt)
+plot(fit_irt, measure = "WR")
+@
+
+Column names can be changed through \texttt{id}, \texttt{time},
+\texttt{status}, \texttt{treatment}, and \texttt{cluster}. For a treatment
+variable with labels other than 0 and 1, \texttt{treatment\_levels} specifies
+the control and treatment levels in that order. For independently randomized
+units, use \texttt{allocation = "independent"} and the known assignment
+probability in \texttt{treatment\_probability}. The default probability is
+$1/2$.
+
+\subsection{A small reproducible fit}
+
+The following code illustrates the fitted object with 40 participants from
+the example data. It uses Kaplan--Meier models and independence between the
+component event times. Both model formulas are intercept-only. This is a
+quick illustration of the interface rather than the covariate-adjusted
+analysis above.
+
+<<small-data>>=
+first_ids <- unlist(lapply(split(irt_end$id, irt_end$treatment),
+                          function(z) head(z, 20L)), use.names = FALSE)
+small_irt <- example_irt[example_irt$id %in% first_ids, ]
+@
+
+<<small-fit>>=
+fit_small <- DRwinStats::drwins(
+  small_irt,
+  outcome = ~ 1, censoring = ~ 1,
+  outcome_model = "km", censoring_model = "km",
+  copula = "independence", priorities = c(1L, 2L),
+  times = c(1, 1.5, 2), allocation = "complete"
+)
+summary(fit_small)
+@
+
+<<small-plot>>=
+plot(fit_small, measure = "NB")
+@
+
+\section{Cluster-randomized trials}
+
+Supplying \texttt{cluster} identifies the independent randomization units.
+The cluster-average estimand gives each cluster equal weight. The
+individual-average estimand gives each participant equal weight. When
+\texttt{target = "both"}, the fitted object contains both estimands.
+They can differ when cluster size is associated with prognosis or treatment
+response.
+
+An outcome formula can include participant and cluster covariates. Cluster
+size is not added automatically as a covariate; it can be included explicitly
+when scientifically appropriate. The target-population weights are handled
+separately from these regression choices.
+
+<<crt-analysis, eval=FALSE>>=
+fit_crt <- DRwinStats::drwins(
+  data = example_crt,
+  outcome = ~ age + sex + x + cluster_cov + log(cluster_size),
+  censoring = ~ age + sex + x + cluster_cov,
+  cluster = "cluster",
+  priorities = c(1L, 2L),
+  outcome_model = "cox", censoring_model = "cox",
+  copula = "gumbel",
+  times = c(1, 2, 3), target = "both",
+  allocation = "complete"
+)
+summary(fit_crt, measure = "WR")
+plot(fit_crt, measure = "WR")
+@
+
+The variance calculation treats each cluster as one independent unit.
+Participants from the same cluster are kept together. Consequently, the
+number of clusters determines the large-sample approximation, even though
+many participant comparisons contribute to the estimator. If a dataset is
+reduced for a trial analysis or a computational example, retain whole
+clusters rather than selecting individual records within each cluster.
+
+\section{Choosing the working models}
+
+\subsection{Formulas for different outcomes}
+
+A named list permits a different formula for each priority. The list names
+are the event codes.
+
+<<outcome-formulas, eval=FALSE>>=
+outcome_formulas <- list(
+  `1` = ~ age + sex + x,
+  `2` = ~ age + sex + x + I(x^2)
+)
+
+fit_separate <- DRwinStats::drwins(
+  example_irt,
+  outcome = outcome_formulas,
+  censoring = ~ age + sex + x,
+  priorities = c(1L, 2L),
+  copula = "gumbel", times = c(1, 2, 3),
+  allocation = "complete"
+)
+@
+
+\subsection{Cox and Kaplan--Meier models}
+
+The Cox option accommodates the covariates in the supplied formula. The
+Kaplan--Meier option is a product-limit estimator and requires an
+intercept-only formula. A Kaplan--Meier censoring model can be combined with
+an outcome model that includes covariates. Kaplan--Meier outcome margins are
+used with the independence copula. For a joint copula model without outcome
+covariates, use \texttt{outcome\_model = "nonparametric"} and
+\texttt{outcome = \textasciitilde{} 1}; the margins are then estimated through
+the joint outcome likelihood.
+
+<<km-and-nonparametric, eval=FALSE>>=
+fit_km_censoring <- DRwinStats::drwins(
+  example_irt,
+  outcome = ~ age + sex + x, censoring = ~ 1,
+  censoring_model = "km", copula = "gumbel",
+  priorities = c(1L, 2L), times = c(1, 2, 3),
+  allocation = "complete"
+)
+
+fit_no_outcome_covariates <- DRwinStats::drwins(
+  example_irt,
+  outcome = ~ 1, censoring = ~ age + sex + x,
+  outcome_model = "nonparametric", copula = "clayton",
+  priorities = c(1L, 2L), times = c(1, 2, 3),
+  allocation = "complete"
+)
+@
+
+\subsection{Dependence between event times}
+
+The available copula choices are \texttt{gumbel}, \texttt{clayton},
+\texttt{frank}, \texttt{joe}, and \texttt{independence}. The fitted copulas
+describe dependence among outcomes of the same participant. Dependence
+between participants in a CRT is accounted for in the cluster-level
+variance calculation. The implemented Archimedean families use their
+positive-dependence parameter ranges; independence is available explicitly.
+The chosen copula and its fitted parameters are retained in the fitted
+object.
+
+Changing the copula specifies a different joint outcome model and can be
+used for a sensitivity analysis. The censoring model and clinical comparison
+can be held fixed across such analyses.
+
+<<copula-sensitivity, eval=FALSE>>=
+fit_frank <- DRwinStats::drwins(
+  example_irt,
+  outcome = ~ age + sex + x, censoring = ~ age + sex + x,
+  copula = "frank", priorities = c(1L, 2L),
+  times = c(1, 2, 3), allocation = "complete"
+)
+summary(fit_frank, measure = "WR")
+@
+
+\subsection{Optional ridge penalties}
+
+Ridge regularization is controlled explicitly. A zero value turns it off.
+A positive value can be useful when the covariates lead to unstable model
+fits. The selected value is stored with the fit so the analysis can be
+reproduced.
+
+<<ridge-option, eval=FALSE>>=
+fit_ridge <- DRwinStats::drwins(
+  example_irt,
+  outcome = ~ age + sex + x, censoring = ~ age + sex + x,
+  copula = "gumbel", priorities = c(1L, 2L),
+  times = c(1, 2, 3), allocation = "complete",
+  control = DRwinStats::drwins_control(ridge = 0.01)
+)
+@
+
+The default control uses \texttt{ridge = 0}. Inspect the fit diagnostics when
+changing the working models or the penalty. Regularization addresses
+numerical stability; the double robustness result concerns correct
+specification of the censoring models or the joint outcome models.
+
+\section{Results, censoring rates, and plots}
+
+\texttt{summary()} displays the estimated probabilities and win summaries,
+standard errors, confidence intervals, and censoring information.
+\texttt{as.data.frame()} provides the estimates in a data frame.
+\texttt{coef()}, \texttt{confint()}, and \texttt{vcov()} provide standard
+access to coefficients, confidence intervals, and the covariance of the
+estimated win and loss probabilities.
+
+<<accessors, eval=FALSE>>=
+summary(fit_irt, measure = "WR")
+as.data.frame(fit_irt)
+coef(fit_irt, measure = "NB")
+confint(fit_irt, measure = "WR")
+vcov(fit_irt)
+fit_irt$censoring
+@
+
+The censoring table is indexed by restriction time and treatment arm and
+identifies the population weights used. Rates refer to participants censored
+before their restricted outcome is resolved. The proportion of all rows with
+status 0 is not a censoring rate because a participant may contribute several
+rows and administrative follow-up at or beyond the restriction time resolves
+the outcome.
+
+Plots can show the win ratio, win odds, net benefit, or comparison
+probabilities. The default colors are muted and distinguish the two CRT
+targets. Intervals for the win ratio and win odds are calculated on the
+logarithmic scale and then transformed back. Intervals at different
+restriction times are pointwise.
+
+<<plots, eval=FALSE>>=
+plot(fit_irt, measure = "WR")
+plot(fit_irt, measure = "WO")
+plot(fit_irt, measure = "NB")
+plot(fit_irt, measure = "probabilities")
+plot(fit_crt, measure = "WR")
+@
+
+For inference, the package retains the contribution of fitting the
+censoring and outcome models in the analytic variance calculation. This
+contribution is relevant when one set of working models is correctly
+specified. For the individual-average CRT probabilities, the calculation
+also includes estimation of mean cluster size. The resulting confidence
+intervals rely on the stated model and regularity conditions and the number
+of independent randomization units.
+
+A win ratio above one favors the treatment arm under the specified hierarchy.
+The net benefit is the difference between treatment-win and treatment-loss
+probabilities, and the win odds assigns half of the tie probability to each
+arm. These are summaries of the same pairwise comparison. Their numerical
+values should be interpreted together with the restriction time, clinical
+hierarchy, tie probability, and target population.
+
+\section{Further information}
+
+The package help pages document the arguments, fitted-object components,
+supported model combinations, and validation rules. The source project
+includes the script that generated both example datasets. The statistical
+construction follows the accompanying manuscript by Fang and Li,
+\emph{Doubly robust win statistics for hierarchical composite endpoints in
+individual- and cluster-randomized trials}, and its supplied simulation code.
+No clinical treatment effect is implied by the synthetic examples.
+
+For R formula conventions and package structure, see the
+\href{https://cran.r-project.org/manuals.html}{R manuals}. The Cox model interface follows
+the usual proportional hazards notation used in the \texttt{survival}
+package.
+
+\end{document}
